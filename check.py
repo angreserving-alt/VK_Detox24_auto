@@ -5,9 +5,11 @@
 Запуск: python3 check.py post_N.md
 
 Параметры этой клиники (должны совпадать с файлом стиля на Google Drive):
-  объём от 600 до 1200 знаков без пробелов, считается ВЕСЬ пост: заголовок + текст + подпись
-  формат: чистый текст, без * # > ` _ ~ и таблиц; единственная разметка — строка картинки ![описание](ссылка)
-  структура: первая строка - заголовок, последняя строка - подпись только с должностью (без стажа)
+  объём от 600 до 1200 знаков без пробелов: заголовок + текст (звёздочки жирного и эмодзи не считаются, подписи нет)
+  формат: без # > ` _ ~ и таблиц; из разметки допустим жирный **текст** парами и строка картинки ![описание](ссылка)
+  жирный: заголовок целиком + 2-4 ключевые фразы по 2-7 слов (не весь абзац)
+  эмодзи: ровно 1 из разрешённого набора, не в заголовке, не в начале строки, не подряд
+  структура: первая строка - заголовок; подписи врача в конце НЕТ (запрещена любая должность последней строкой)
   абзац: не длиннее 3 строк
   картинка: ровно одна, с реальной ссылкой http, БЕЗ подписи под ней
   стаж врача, ссылки на сайт, плашка 18+/противопоказания: запрещены
@@ -24,6 +26,9 @@ CLINIC = "Detox24 (detox24.ru)"
 VMIN, VMAX = 600, 1200
 PARA_LINES = 3
 TITLE_MAX = 90
+BOLD_MIN, BOLD_MAX = 2, 4      # число ключевых фраз жирным (кроме заголовка)
+EMOJI_N = 1                        # ровно столько эмодзи на пост (0 - эмодзи нельзя совсем)
+EMOJI_ALLOWED = "💬 ☎️ 🌙 ☀️ 🏠 ☕ 🤝"          # разрешённый набор
 QUOTE_IN_GUILLEMETS = False   # True только у Нарколог Клиник: цитата комментария целиком в «ёлочках» отдельной строкой
 CHECK_STORY_PRIVACY = False  # True только у Гармонии: истории без имён, возраста и профессий
 
@@ -95,7 +100,7 @@ LECHENIE_PATTERN = re.compile(
 FEAR_MONGERING = ["без помощи он умрёт", "он умрёт", "она умрёт", "они умрут"]
 
 # ============================================================
-# СТАЖ ВРАЧА — запрещён везде: в тексте, в голосе, в подписи
+# СТАЖ ВРАЧА — запрещён везде: в тексте и в голосе
 # ============================================================
 
 EXPERIENCE_DIRECT = [
@@ -192,6 +197,35 @@ def is_img_line(line):
     return bool(IMG_LINE_RE.match(line))
 
 
+EMOJI_RE = re.compile('[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2300-\u23FF\u203C\u2049\u2122\u2139\u2194-\u21AA\u00A9\u00AE\u3030\u303D\u3297\u3299]\uFE0F?')
+BOLD_RE = re.compile(r'\*\*([^*\n]+?)\*\*')
+SIGN_WORDS = {'врач', 'главный', 'нарколог', 'психиатр', 'психотерапевт', 'доктор', 'ведущий', 'старший',
+              'клиники', 'клиника', 'заведующий', 'заведующая', 'специалист'}
+
+
+def norm_emoji(e):
+    return e.replace('\uFE0F', '')
+
+
+ALLOWED_SET = {norm_emoji(x) for x in EMOJI_ALLOWED.split()}
+
+
+def clean_text(raw):
+    """Текст без пар ** и без эмодзи: на нём работают все остальные проверки (объём, паттерны, абзацы)."""
+    t = BOLD_RE.sub(r'\1', raw)
+    t = EMOJI_RE.sub('', t)
+    t = t.replace('\uFE0F', '')
+    t = re.sub(r'[ \t]{2,}', ' ', t)
+    t = re.sub(r'[ \t]+$', '', t, flags=re.M)
+    return t
+
+
+def is_sign_line(line):
+    """Последняя строка похожа на подпись-должность («Главный врач», «Врач-нарколог»)."""
+    words = re.findall(r'[а-яёa-z0-9]+', line.lower())
+    return 0 < len(words) <= 5 and all(w in SIGN_WORDS for w in words)
+
+
 def strip_markup(text):
     t = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)
     t = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', t)
@@ -214,7 +248,9 @@ def sentences(text):
 
 def main(path):
     with open(path, encoding='utf-8') as f:
-        raw = f.read()
+        raw_orig = f.read()
+    lines_o = raw_orig.split('\n')
+    raw = clean_text(raw_orig)
     lines = raw.split('\n')
     body = strip_markup(raw)
     low = body.lower()
@@ -224,17 +260,17 @@ def main(path):
     print("ПРОВЕРКА: " + CLINIC + f" - пост ВК ({VMIN}-{VMAX} зн. без пробелов) | файл: " + path)
     print("=" * 64)
 
-    # --- заголовок и подпись ---
-    nonempty = [(i, l.strip()) for i, l in enumerate(lines) if l.strip()]
-    print("\n[ЗАГОЛОВОК И ПОДПИСЬ]")
-    if len(nonempty) < 3:
-        print(" !! в файле меньше трёх непустых строк: нужны заголовок, текст и подпись")
-        problems.append("нет структуры заголовок/текст/подпись")
+    # --- заголовок и конец поста ---
+    nonempty = [(i, l.strip()) for i, l in enumerate(lines) if l.strip() and not is_img_line(l)]
+    print("\n[ЗАГОЛОВОК И КОНЕЦ ПОСТА] подписи врача в конце быть не должно")
+    if len(nonempty) < 2:
+        print(" !! в файле меньше двух непустых строк: нужны заголовок и текст")
+        problems.append("нет структуры заголовок/текст")
     else:
         title = nonempty[0][1]
-        sign = nonempty[-1][1]
+        last = nonempty[-1][1]
         print(f" заголовок: {title}")
-        if is_img_line(title):
+        if is_img_line(lines[0] if lines else ''):
             print(" !! первая строка - картинка, а должна быть заголовок")
             problems.append("первая строка не заголовок")
         if len(title) > TITLE_MAX:
@@ -246,21 +282,69 @@ def main(path):
             if title.lower().startswith(pr):
                 print(f" !! служебный префикс в заголовке: {pr}")
                 problems.append("служебный префикс в заголовке")
-        print(f" подпись: {sign}")
-        sign_low = sign.lower()
-        if is_img_line(sign) or 'врач' not in sign_low or re.search(r'\d', sign) or len(sign.split()) > 6:
-            print(" !! последняя строка должна быть подписью: только должность («Врач-нарколог»), без цифр и стажа")
-            problems.append("нет подписи-должности последней строкой")
-        elif title == sign:
-            print(" !! заголовок и подпись совпали")
-            problems.append("нет подписи")
+        sign_lines = [l for _, l in nonempty[1:] if is_sign_line(l)]
+        if sign_lines:
+            print(f" !! в посте есть подпись-должность: «{sign_lines[-1]}» - убери целиком, пост заканчивается мыслью текста")
+            problems.append("подпись врача в конце поста")
         else:
-            print(" OK")
+            print(f" последняя строка: {last[:70]}")
+            print(" OK: подписи врача нет")
+
+    # --- жирный и эмодзи ---
+    print("\n[ЖИРНЫЙ] заголовок целиком + ключевые фразы, парами **...**")
+    first_i = next((i for i, l in enumerate(lines_o) if l.strip() and not is_img_line(l)), None)
+    if first_i is None or not re.match(r'^\s*\*\*[^*\n]+\*\*\s*$', EMOJI_RE.sub('', lines_o[first_i])):
+        print(" !! заголовок (первая строка) должен быть целиком жирным: **Заголовок**")
+        problems.append("заголовок не выделен жирным")
+    phrases = []
+    for i, l in enumerate(lines_o):
+        if i == first_i or is_img_line(l):
+            continue
+        for m in BOLD_RE.finditer(l):
+            phrases.append((i + 1, m.group(1).strip(), l))
+    print(f" ключевых фраз жирным (кроме заголовка): {len(phrases)} (норма {BOLD_MIN}-{BOLD_MAX})" + ("" if BOLD_MIN <= len(phrases) <= BOLD_MAX else " !!"))
+    if not (BOLD_MIN <= len(phrases) <= BOLD_MAX):
+        problems.append("число жирных фраз вне нормы")
+    for i, ph, l in phrases:
+        nw = len(ph.split())
+        whole = re.sub(r'^\s*\d+\.\s*|^\s*-\s*', '', EMOJI_RE.sub('', BOLD_RE.sub(r'\1', l))).strip()
+        print(f"   строка {i}: «{ph}»")
+        if nw < 2 or nw > 7:
+            print(f"   !! фраза из {nw} слов: нужно 2-7")
+            problems.append("жирная фраза неправильной длины")
+        if ph.strip() == whole:
+            print("   !! выделена вся строка/абзац целиком: выдели только ключевую фразу внутри")
+            problems.append("жирным выделена вся строка")
+
+    print("\n[ЭМОДЗИ] " + (f"ровно {EMOJI_N} из набора {EMOJI_ALLOWED}" if EMOJI_N else "в этой клинике эмодзи не используются"))
+    found = []
+    for i, l in enumerate(lines_o, 1):
+        if is_img_line(l):
+            continue
+        for m in EMOJI_RE.finditer(l):
+            found.append((i, m.group(0), m.start(), l))
+    print(f" найдено эмодзи: {len(found)}" + ("" if len(found) == EMOJI_N else f" !! (нужно {EMOJI_N})"))
+    if len(found) != EMOJI_N:
+        problems.append("число эмодзи не равно норме")
+    for k, (i, e, pos, l) in enumerate(found):
+        ne = norm_emoji(e)
+        if ne not in ALLOWED_SET:
+            print(f"   !! строка {i}: эмодзи {e} вне разрешённого набора")
+            problems.append("эмодзи вне разрешённого набора")
+        if i - 1 == first_i:
+            print(f"   !! строка {i}: эмодзи {e} в заголовке")
+            problems.append("эмодзи в заголовке")
+        if re.match(r'^\s*(?:\*\*)?\s*(?:\d+\.\s*|-\s*)?$', l[:pos]):
+            print(f"   !! строка {i}: эмодзи {e} стоит в начале строки или вместо маркера списка")
+            problems.append("эмодзи в начале строки")
+        if k and found[k - 1][0] == i and not l[found[k - 1][2] + len(found[k - 1][1]):pos].strip(' *'):
+            print(f"   !! строка {i}: два эмодзи подряд")
+            problems.append("эмодзи подряд")
 
     # --- объём ---
     no_spaces = len(re.sub(r'\s', '', body))
     ok_vol = VMIN <= no_spaces <= VMAX
-    print(f"\n[ОБЪЁМ] знаков без пробелов (заголовок + текст + подпись): {no_spaces} (норма {VMIN}-{VMAX})" + ("" if ok_vol else " !!"))
+    print(f"\n[ОБЪЁМ] знаков без пробелов (заголовок + текст, без ** и эмодзи): {no_spaces} (норма {VMIN}-{VMAX})" + ("" if ok_vol else " !!"))
     if no_spaces < VMIN:
         print(f" !! не хватает {VMIN - no_spaces} зн.: допиши по существу (конкретная деталь, пример из темы, понятный следующий шаг), без воды и повторов")
         problems.append("объём меньше минимума")
@@ -269,7 +353,7 @@ def main(path):
         problems.append("объём больше максимума")
 
     # --- чистый текст ---
-    print("\n[ЧИСТЫЙ ТЕКСТ] разметки быть не должно (кроме строки картинки)")
+    print("\n[ЧИСТЫЙ ТЕКСТ] кроме парного жирного и строки картинки разметки быть не должно (одинокая * тоже ошибка)")
     markup_hits = []
     for i, l in enumerate(lines, 1):
         if is_img_line(l):
@@ -442,7 +526,7 @@ def main(path):
         print(" висячих условий нет - OK (смысловую логику проверяет шаг «Проверка логики»)")
 
     # ====== СТАЖ ВРАЧА ======
-    print("\n[СТАЖ ВРАЧА] (запрещён в тексте и в подписи)")
+    print("\n[СТАЖ ВРАЧА] (запрещён везде)")
     exp_hits = []
     for pat, name in EXPERIENCE_DIRECT:
         for h in re.finditer(pat, low):
